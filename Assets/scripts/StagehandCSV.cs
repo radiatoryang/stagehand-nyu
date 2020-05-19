@@ -15,23 +15,46 @@ namespace Stagehand
 
 		public string downloadFromURL = "url";
 		string urlData;
+		public string debugEditorPathRoot = "C:\\Users\\Robert\\Desktop\\gamecenterlive\\endOfYearShow\\";
 		public string[] writeToFilepaths = new string[8];
 		string[,] csvData = new string[,] { {"C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7"} };
 		int currentRowIndex=0;
 
 		void Start () {
 			Application.targetFrameRate = 30;
-			downloadFromURL = PlayerPrefs.GetString( "downloadFromURL", downloadFromURL);
-			var newWriteToFilepaths = PlayerPrefs.GetString( "writeToFilepaths", ",,,,,,,").Split(new string[] {","}, System.StringSplitOptions.None );
-			for ( int i=0; i<newWriteToFilepaths.Length; i++) {
-				if ( !string.IsNullOrEmpty(newWriteToFilepaths[i]) ) {
-					writeToFilepaths[i] = newWriteToFilepaths[i];
+
+			if ( Application.isEditor ) {
+				for ( int i=0; i<writeToFilepaths.Length; i++) {
+					if ( writeToFilepaths[i].StartsWith("..") ) {
+						writeToFilepaths[i] = debugEditorPathRoot + writeToFilepaths[i].Substring(3);
+					}
+				}
+			} else {
+				downloadFromURL = PlayerPrefs.GetString( "downloadFromURL", downloadFromURL);
+				var newWriteToFilepaths = PlayerPrefs.GetString( "writeToFilepaths", ",,,,,,,").Split(new string[] {","}, System.StringSplitOptions.None );
+				for ( int i=0; i<newWriteToFilepaths.Length; i++) {
+					if ( !string.IsNullOrEmpty(newWriteToFilepaths[i]) ) {
+						writeToFilepaths[i] = newWriteToFilepaths[i];
+					}
 				}
 			}
 			StartRefresh();
 		}
 
 		void OnDisable() {
+			// move back any videos, cleanup!
+			for(int column=0; column < lastVideoRows.Length; column++) {
+				if ( writeToFilepaths[column].EndsWith(".mp4") == false || File.Exists( writeToFilepaths[column] ) == false) {
+					continue;
+				}
+				if ( lastVideoRows[column] > 0 ) {
+					var oldVideoPath = GetVideoPathFor( column, lastVideoRows[column] );
+					File.Move( writeToFilepaths[column], oldVideoPath );
+				}
+			}
+
+			if ( Application.isEditor ) { return; }
+
 			PlayerPrefs.SetString( "downloadFromURL", downloadFromURL);
 			PlayerPrefs.SetString( "writeToFilepaths", string.Join(",", writeToFilepaths) );
 			PlayerPrefs.Save();
@@ -55,9 +78,10 @@ namespace Stagehand
 			}
 			GUI.enabled = csvData != null && csvData.GetLength(1) > 2 && !downloadingVideos;
 			if ( GUILayout.Button(downloadingVideos ? "downloading videos, please wait..." : "Download all videos (will take a while!)") ) {
-				StartVideoDownload(6, writeToFilepaths[6] );
+				StartVideoDownload();
 			}
 			GUI.enabled = true;
+			skipIfFileExists = GUILayout.Toggle(skipIfFileExists, "skip download if file exists" );
 			downloadFromURL = GUILayout.TextField(downloadFromURL);
 			// GUILayout.Label(" last report: " + lastReport);
 
@@ -66,20 +90,27 @@ namespace Stagehand
 
 			GUILayout.BeginHorizontal(skin.box);
 			if ( downloadingVideos ) {
-				GUILayout.Label("DOWNLOADING VIDEOS, please wait!... currently downloading: " + lastDownloadStatus);
+				GUILayout.Label("DOWNLOADING VIDEOS, please wait!\n" + lastDownloadStatus);
+				GUILayout.Label( (downloadProgress * 100f).ToString("F0") + "%" );
 			} else {
 				if ( GUILayout.Button("-", GUILayout.MaxWidth(32)) ) {
-					currentRowIndex = Mathf.Max(0, currentRowIndex - 1);
-					RefreshToFiles();
+					int newCurrentRowIndex = Mathf.Max(0, currentRowIndex - 1);
+					if ( currentRowIndex != newCurrentRowIndex ) {
+						RefreshToFiles(currentRowIndex, newCurrentRowIndex);
+					}
+					currentRowIndex = newCurrentRowIndex;
 				}
 				GUILayout.Label( currentRowIndex.ToString(), GUILayout.MaxWidth(32) );
 				int nextIndex = Mathf.Min(csvData.GetLength(1)-1, currentRowIndex + 1);
 				if ( GUILayout.Button("+", GUILayout.MaxWidth(32)) ) {
-					currentRowIndex = nextIndex;
-					RefreshToFiles();
+					int newCurrentRowIndex = nextIndex;
+					if ( currentRowIndex != newCurrentRowIndex ) {
+						RefreshToFiles(currentRowIndex, newCurrentRowIndex);
+					}
+					currentRowIndex = newCurrentRowIndex;
 				}
 
-				if ( csvData.GetLength(1) > 2 && Time.timeSinceLevelLoad > 1f) {
+				if ( currentRowIndex > 0 && csvData.GetLength(1) > 2 && Time.timeSinceLevelLoad > 1f) {
 					GUILayout.FlexibleSpace();
 					GUILayout.Label("NOW: " + csvData[1, currentRowIndex]);
 					GUILayout.FlexibleSpace();
@@ -87,6 +118,15 @@ namespace Stagehand
 				}
 			}
 			GUILayout.EndHorizontal();
+
+			if ( Time.timeSinceLevelLoad < errorTimestamp + 10f ) {
+				var oldColor = GUI.color;
+				GUI.color = new Color( Mathf.Abs(Mathf.Sin(Time.timeSinceLevelLoad * 10f)), 0f, 0f, 1f );
+				GUILayout.BeginHorizontal(skin.box);
+				GUILayout.Label( errorText );
+				GUILayout.EndHorizontal();
+				GUI.color = oldColor;
+			}
 
 
 			GUILayout.BeginVertical(skin.box);
@@ -105,36 +145,57 @@ namespace Stagehand
 		}
 
 		// downloads video files at all URLs in a column
-		public void StartVideoDownload(int columnIndex, string folderpath) {
+		public void StartVideoDownload() {
 			if (downloadingVideos) {
 				return;
 			}
-			StartCoroutine( VideoDownloadCoroutine(columnIndex, folderpath) );
+			StartCoroutine( VideoDownloadCoroutine() );
 		}
 
-		bool downloadingVideos = false;
-		IEnumerator VideoDownloadCoroutine(int columnIndex, string folderpath) {
+		string SanitizeName(string name) {
+			return name.Replace(":", "_").Replace(" ", "_").Replace(".", "").Replace("\\", "").Replace("/", "").Replace("!", "");
+		}
+
+		string GetVideoPathFor(int columnIndex, int rowIndex ) {
+			string folder = writeToFilepaths[columnIndex].Substring(0, writeToFilepaths[columnIndex].Length-4) + "\\";
+			return folder + rowIndex.ToString("D2") + "_" + SanitizeName(csvData[1, rowIndex]) + ".mp4";
+		}
+
+		bool downloadingVideos = false, skipIfFileExists = true;
+		float downloadProgress = 0f;
+		IEnumerator VideoDownloadCoroutine() {
 			downloadingVideos = true;
 
 			// gather video URLs
-			var allVideoURLs = new string[csvData.GetLength(1)];
-			for (int i=0; i<allVideoURLs.Length; i++) {
-				allVideoURLs[i] = csvData[columnIndex, i];
+			int rowCount = csvData.GetLength(1);
+			var allVideoURLs = new Dictionary<string, string>(); // key = file path, value = url if any
+			for (int columnIndex=0; columnIndex<writeToFilepaths.Length; columnIndex++) {
+				if ( writeToFilepaths[columnIndex].EndsWith(".mp4") ) {
+					for (int rowIndex=1; rowIndex<rowCount; rowIndex++) {
+						if ( string.IsNullOrWhiteSpace( csvData[columnIndex, rowIndex] ) || csvData[columnIndex, rowIndex].Length < 7 || !csvData[columnIndex, rowIndex].StartsWith("http") ) { // not a valid URL, can't download
+							continue;
+						}
+						if ( skipIfFileExists && File.Exists( GetVideoPathFor(columnIndex, rowIndex) ) ) {
+							continue;
+						}
+						allVideoURLs.Add( GetVideoPathFor(columnIndex, rowIndex), csvData[columnIndex, rowIndex] );
+					}
+				}
 			}
+			Debug.LogFormat("VideoDownloadCoroutine found {0} videos to download!", allVideoURLs.Count );
 
+			int downloadCount = 0;
 			// now download each video URL
-			for( int i=0; i<allVideoURLs.Length; i++) {
-				if ( string.IsNullOrWhiteSpace(allVideoURLs[i]) ) {
-					continue;
-				}
-				string url = ProcessGoogleDriveURL( allVideoURLs[i] );
-				if ( url == allVideoURLs[i] ) {
-					// Debug.Log(i.ToString() + ". " + csvData[1, i] + ": not a google drive video link?" );
-					continue; // bail out, the link is empty or it isn't a google drive link? idk
-				}
+			foreach (var kvp in allVideoURLs ) {
 
-				string filepath = folderpath + csvData[1, i] + ".mp4"; // TODO: how to know the file extension?
-				lastDownloadStatus = i.ToString() + ". " + csvData[1, i] + ": SAVING VIDEO... " + url;
+				string url = ProcessGoogleDriveURL( kvp.Value );
+				// if ( url == kvp.Value ) {
+				// 	// Debug.Log(i.ToString() + ". " + csvData[1, i] + ": not a google drive video link?" );
+				// 	continue; // bail out, the link is empty or it isn't a google drive link? idk
+				// }
+
+				string filepath = kvp.Key;
+				lastDownloadStatus = "SAVING " + filepath + " from " + url;
 				Debug.Log( lastDownloadStatus );
 
 				var web = new UnityWebRequest(url);
@@ -143,19 +204,52 @@ namespace Stagehand
 				if ( web.isNetworkError || web.isHttpError ) {
 					Debug.LogWarning( web.error );
 				}
-
 				while ( !web.downloadHandler.isDone ) {
 					yield return 0;
 				}
+
+				// check to see if the download failed because filesize is over 100 MB? need to scan for the confirm code
+				if ( web.downloadedBytes <= 16000) { // file size is too small because it's a webpage, so...
+					Debug.Log("scanning for confirm code...");
+					// get the text
+					string textData = File.ReadAllText( filepath );
+					var textSplit = textData.Split(new string[] { "confirm=" }, System.StringSplitOptions.None);
+					var confirmCode = textSplit[1].Substring(0, 4);
+					url += "&confirm=" + confirmCode;
+
+					lastDownloadStatus = "SAVING " + filepath + " from " + url;
+					Debug.Log( lastDownloadStatus );
+
+					web.Dispose();
+
+					web = new UnityWebRequest(url);
+					web.downloadHandler = new DownloadHandlerFile(filepath);
+					yield return web.SendWebRequest();
+					if ( web.isNetworkError || web.isHttpError ) {
+						Debug.LogWarning( web.error );
+					}
+					while ( !web.downloadHandler.isDone ) {
+						yield return 0;
+					}
+
+					if ( web.downloadedBytes <= 16000) {
+						Debug.Log("confirm code didn't work... shit");
+					}
+					
+				} else {
+					web.Dispose();
+				}
+
 				// var bytes = web.downloadHandler.data;
 				
 				// using (FileStream fls = new FileStream(filepath, FileMode.Create))
 				// {
 				// 	fls.Write(bytes, 0, bytes.Length);
 				// }
-				Debug.Log(i.ToString() + ". " + csvData[1, i] + ": DONE! " + filepath );
+				// Debug.Log("FINISHED " + filepath );
 
-				web.Dispose();
+				downloadCount++;
+				downloadProgress = 1f * downloadCount / allVideoURLs.Count;
 			}
 
 
@@ -167,11 +261,14 @@ namespace Stagehand
             StartCoroutine(RefreshCoroutine(downloadFromURL));
         }
 
-		void RefreshToFiles() {
+		float errorTimestamp = -999f;
+		string errorText = "";
+		int[] lastVideoRows = new int[8];
+		void RefreshToFiles(int oldRow, int newRow) {
 			int maxX = csvData.GetUpperBound(0);
 			string line = "";
 			for ( int x=0; x<maxX; x++) {
-				line += x.ToString() + ": " + csvData[x, currentRowIndex] + " | ";
+				line += x.ToString() + ": " + csvData[x, newRow] + " | ";
 			}
 			Debug.Log(line);
 
@@ -180,16 +277,36 @@ namespace Stagehand
 					continue;
 				}
 				if ( writeToFilepaths[i].EndsWith(".mp4") ) {
-					// swap in alternate files instead of downloading?
+					
+					if ( File.Exists( writeToFilepaths[i]) ) {
+						var oldVideoPath = GetVideoPathFor( i, lastVideoRows[i] );
+						try {
+							File.Move( writeToFilepaths[i], oldVideoPath ); // cut and paste video back to its old name
+						} catch {
+							errorText = "ERROR! You have to hide the video source in OBS before I can swap files.";
+							errorTimestamp = Time.timeSinceLevelLoad;
+						}
+					}
+
+					var newVideoPath = GetVideoPathFor( i, newRow );
+					if ( File.Exists( newVideoPath ) ) {
+						try {
+							File.Move( newVideoPath, writeToFilepaths[i] ); // cut and paste next video to current video
+							lastVideoRows[i] = newRow;
+						} catch {	
+							errorText = "ERROR! You have to hide the video source in OBS before I can swap files.";
+							errorTimestamp = Time.timeSinceLevelLoad;
+						}
+					}
 					continue;
 				}
-				if ( SaveIfImage( csvData[i, currentRowIndex], writeToFilepaths[i] ) ) {
+				if ( SaveIfImage( csvData[i, newRow], writeToFilepaths[i] ) ) {
 					continue;
 				}
 				StreamWriter writer = new StreamWriter(writeToFilepaths[i], false);
-				string data = csvData[i, currentRowIndex];
+				string data = csvData[i, newRow];
 				if ( data.StartsWith("https://") ) { 
-					data = data.Substring(8);
+					data = data.Substring(8); // ignore the https:// preamble!
 				}
 				if ( data.Length <= 4 && (data.StartsWith("BFA") || data.StartsWith("MFA")) ) {
 					data = data.Substring(0, 3);
@@ -212,14 +329,14 @@ namespace Stagehand
 			if (results.isNetworkError)
 			{
 				// Debug.LogWarningFormat("Bobbin couldn't retrieve file at <{0}> and error message was: {1}", results.url, results.error);
-				lastReport = string.Format("\n- [ERROR] {0}: {1}", url, results.error);
+				Debug.LogFormat("\n- [ERROR] {0}: {1}", url, results.error);
 				yield break;
 			}
 
 			// make sure the fetched file isn't just a Google login page
 			if (results.downloadHandler.text.Contains("google-site-verification")) {
 				// Debug.LogWarningFormat("Bobbin couldn't retrieve file at <{0}> because the Google Doc didn't have public link sharing enabled", results.url);
-				lastReport = string.Format("\n- [ERROR] {0}: This Google Docs share link does not have 'VIEW' access; make sure you enable link sharing.", url);
+				Debug.LogFormat("\n- [ERROR] {0}: This Google Docs share link does not have 'VIEW' access; make sure you enable link sharing.", url);
 				yield break;
 			}
 
