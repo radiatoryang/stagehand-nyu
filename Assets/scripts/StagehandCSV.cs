@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 using UnityEngine.Networking;
+using System.Linq;
 
 namespace Stagehand
 {
@@ -20,6 +21,9 @@ namespace Stagehand
 		string[,] csvData = new string[,] { {"C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7"} };
 		int currentRowIndex=0;
 
+		public string htmlFilepath = "..\\Data_HTML_Full.html";
+		public string htmlTemplatePath = "..\\Data_HTML_Template.html";
+
 		void Start () {
 			Application.targetFrameRate = 30;
 
@@ -29,6 +33,8 @@ namespace Stagehand
 						writeToFilepaths[i] = debugEditorPathRoot + writeToFilepaths[i].Substring(3);
 					}
 				}
+				htmlFilepath = debugEditorPathRoot + htmlFilepath.Substring(3);
+				htmlTemplatePath = debugEditorPathRoot + htmlTemplatePath.Substring(3);
 			} else {
 				downloadFromURL = PlayerPrefs.GetString( "downloadFromURL", downloadFromURL);
 				var newWriteToFilepaths = PlayerPrefs.GetString( "writeToFilepaths", ",,,,,,,").Split(new string[] {","}, System.StringSplitOptions.None );
@@ -37,6 +43,8 @@ namespace Stagehand
 						writeToFilepaths[i] = newWriteToFilepaths[i];
 					}
 				}
+				htmlFilepath = PlayerPrefs.GetString("htmlFilepath", "..\\Data_HTML_Full.html");
+				htmlTemplatePath = PlayerPrefs.GetString("htmlTemplatePath", "..\\Data_HTML_Template.html");
 			}
 			StartRefresh();
 		}
@@ -57,6 +65,8 @@ namespace Stagehand
 
 			PlayerPrefs.SetString( "downloadFromURL", downloadFromURL);
 			PlayerPrefs.SetString( "writeToFilepaths", string.Join(",", writeToFilepaths) );
+			PlayerPrefs.SetString( "htmlFilepath", htmlFilepath );
+			PlayerPrefs.SetString( "htmlTemplatePath", htmlTemplatePath );
 			PlayerPrefs.Save();
 		}
 
@@ -139,6 +149,16 @@ namespace Stagehand
 				writeToFilepaths[i] = GUILayout.TextField(writeToFilepaths[i] );
 				GUILayout.EndHorizontal();
 			}
+			GUILayout.BeginHorizontal();
+			GUILayout.Label( "All Data HTML", GUILayout.Width(90) );
+			htmlFilepath = GUILayout.TextField( htmlFilepath );
+			GUILayout.EndHorizontal();
+
+			GUILayout.BeginHorizontal();
+			GUILayout.Label( "HTML template", GUILayout.Width(90) );
+			htmlTemplatePath = GUILayout.TextField( htmlTemplatePath );
+			GUILayout.EndHorizontal();
+
 			GUILayout.EndVertical();
 
 			GUILayout.EndArea();
@@ -283,7 +303,7 @@ namespace Stagehand
 						try {
 							File.Move( writeToFilepaths[i], oldVideoPath ); // cut and paste video back to its old name
 						} catch {
-							errorText = "ERROR! You have to hide the video source in OBS before I can swap files.";
+							errorText = "ERROR! You have to hide the video source in OBS before I can swap the MP4 files.";
 							errorTimestamp = Time.timeSinceLevelLoad;
 						}
 					}
@@ -294,7 +314,7 @@ namespace Stagehand
 							File.Move( newVideoPath, writeToFilepaths[i] ); // cut and paste next video to current video
 							lastVideoRows[i] = newRow;
 						} catch {	
-							errorText = "ERROR! You have to hide the video source in OBS before I can swap files.";
+							errorText = "ERROR! You have to hide the video source in OBS before I can swap the MP4 files.";
 							errorTimestamp = Time.timeSinceLevelLoad;
 						}
 					}
@@ -305,6 +325,9 @@ namespace Stagehand
 				}
 				StreamWriter writer = new StreamWriter(writeToFilepaths[i], false);
 				string data = csvData[i, newRow];
+				if ( data.StartsWith("http://") ) { 
+					data = data.Substring(7); // ignore the http:// preamble!
+				}
 				if ( data.StartsWith("https://") ) { 
 					data = data.Substring(8); // ignore the https:// preamble!
 				}
@@ -314,6 +337,17 @@ namespace Stagehand
 				writer.WriteLine(data);
 				writer.Close();
 			}
+
+
+			// refresh to HTML
+			string htmlTemplate = File.ReadAllText( htmlTemplatePath );
+			var rowData = Enumerable.Range(0, csvData.GetLength(0))
+                .Select(x => csvData[x, newRow])
+                .ToArray();
+			string htmlData = string.Format( htmlTemplate, rowData); // replace all tokens in the template with the actual CSV data
+			StreamWriter htmlWriter = new StreamWriter(htmlFilepath, false);
+			htmlWriter.WriteLine( htmlData );
+			htmlWriter.Close();
 		}
 
         /// <summary>
