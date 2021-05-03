@@ -7,7 +7,23 @@ using System.Linq;
 
 namespace Stagehand
 {
-
+    // all of this is VERY specific to how our specific NYU show overlays work, with very little explanation or user friendliness, sorry
+    // it's all pretty fragile and brittle and error prone		
+    // NYU game center students: ask Logan for a copy of the show overlays, which should have the Stagehand exe in the right place and the files in the right place
+	
+    // what this does:
+    // 1. grabs Google Sheets in TSV format (Google Sheet must be set to "publish to web") without any Google auth access... see "downloadFromURL"
+    // 2. based on the spreadsheet, it can download the background image + trailer MP4 into a specially named folder (all hosted on Google Drive; the Drive URLs must have public view link access)
+    // 3. when you click the "+" button, it move / renames all the files and folders for OBS to find (OBS itself doesn't know anything about what Stagehand is doing)
+    // 4. in OBS, you need to switch scenes so it can refresh the Video source 
+	
+    // if you know web programming, it's easier to do this all in a dynamic webpage and plug that into OBS
+    // but I didn't know web programming well enough, so that's why I did this terrible thing in Unity
+	
+    // to use, set all the public variables to exactly the right settings... lol... settings are saved via playerprefs, if operator modifies them
+	
+    // we only tested this on Windows, and recommend using Windows OBS (MacOS doesn't play great with OBS, different file system, etc)
+	
     public class StagehandCSV : MonoBehaviour
     {
         public static StagehandCSV Instance;
@@ -417,8 +433,6 @@ namespace Stagehand
 				return true;
 			}
 			return false;
-			// https://drive.google.com/file/d/1NZo8UVre9OIKBxDfOYh0Gv5h1-gdjWWJ/view/
-			// https://drive.google.com/uc?id=1NZo8UVre9OIKBxDfOYh0Gv5h1-gdjWWJ&export=download
 		}
 
 		IEnumerator SaveImage(string url, string filepath) {
@@ -461,7 +475,6 @@ namespace Stagehand
             {
                 var docID = url.Substring( "https://docs.google.com/spreadsheets/d/".Length, 44 );
                 return string.Format("https://docs.google.com/spreadsheets/export?format=tsv&id={0}", docID);
-				// // https://docs.google.com/spreadsheets/export?format=tsv&id=117QYyK-OLZ6vIpmEXI_dmksHyzJF6ygZGc-BsBoe_B0&gid=394660007
             }
             return url;
         }
@@ -497,7 +510,7 @@ namespace Stagehand
 			Debug.Log(textOutput);
 		}
 
-		// splits a CSV row 
+		// splits a CSV row ... converted to TSV since we needed to support commas
 		static public string[] SplitCsvLine(string line)
 		{
 			// return (from System.Text.RegularExpressions.Match m in Regex.Matches(line,
